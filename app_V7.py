@@ -6,7 +6,7 @@ import tempfile
 import time
 
 # =========================================================
-# 1.UI DESIGN (CSS)
+# 1. UI DESIGN (CSS) - Professional Gym/Biometric Look
 # =========================================================
 st.set_page_config(page_title="PoseShow Pro", layout="wide")
 
@@ -26,7 +26,6 @@ st.markdown("""
     }
     div[data-testid="stMetricValue"] { color: #DFFF00 !important; font-family: 'Courier New'; }
     h1, h2, h3 { color: #DFFF00 !important; font-weight: 800; }
-    /* Force images to have consistent rounded corners like the Gym App */
     img { border-radius: 15px; border: 1px solid #30363D; }
     </style>
     """, unsafe_allow_html=True)
@@ -52,41 +51,16 @@ JOINTS = {
 
 @st.cache_resource
 def get_pose_engine(comp, is_static):
+    # model_complexity=0 (Lite) is CRITICAL for cloud permissions and mobile speed
     return mp_pose.Pose(
         static_image_mode=is_static, 
-        model_complexity=comp, 
+        model_complexity=0, 
         smooth_landmarks=True, 
         min_detection_confidence=0.5, 
         min_tracking_confidence=0.5
     )
 
-def draw_movenet(frame, pts):
-    line_color = (0, 255, 200) 
-    face_links = [("nose","r_eye"), ("nose","l_eye"), ("r_eye","r_ear"), ("l_eye","l_ear")]
-    body_links = [("r_sho","l_sho"), ("r_sho","r_hip"), ("l_sho","l_hip"), ("r_hip","l_hip"),
-                  ("r_sho","r_elb"), ("r_elb","r_wri"), ("l_sho","l_elb"), ("l_elb","l_wri"),
-                  ("r_hip","r_kne"), ("r_kne","r_ank"), ("l_hip","l_kne"), ("l_kne","l_ank")]
-    for p1, p2 in face_links + body_links:
-        if p1 in pts and p2 in pts:
-            cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
-    return frame
-
-def draw_openpose(frame, pts):
-    line_color = (0, 0, 255) 
-    if "r_sho" in pts and "l_sho" in pts:
-        neck = (int((pts["r_sho"][0] + pts["l_sho"][0])/2), int((pts["r_sho"][1] + pts["l_sho"][1])/2))
-        pts["neck"] = neck
-    skeleton = [("nose","neck"), ("neck","r_sho"), ("neck","l_sho"), ("neck","r_hip"), ("neck","l_hip"),
-                ("r_sho","r_elb"), ("r_elb","r_wri"), ("l_sho","l_elb"), ("l_elb","l_wri"),
-                ("r_hip","r_kne"), ("r_kne","r_ank"), ("l_hip","l_kne"), ("l_kne","l_ank"),
-                ("nose","r_eye"), ("r_eye","r_ear"), ("nose","l_eye"), ("l_eye","l_ear")]
-    for p1, p2 in skeleton:
-        if p1 in pts and p2 in pts:
-            cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
-    return frame
-
 def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
-    # FORCE SYMMETRY: Resize input to match target analysis size exactly
     frame = cv2.resize(frame, target_size)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     start = time.time()
@@ -101,14 +75,10 @@ def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
                for k, v in JOINTS.items() for landmarks in [results.pose_landmarks] 
                if landmarks.landmark[v].visibility > 0.5}
 
-        if "MediaPipe" in model_name:
-            mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+        # MediaPipe Drawing
+        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
                                      mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=1, circle_radius=2),
                                      mp_drawing.DrawingSpec(color=(223, 255, 0), thickness=2))
-        elif "MoveNet" in model_name:
-            annotated = draw_movenet(annotated, pts)
-        else:
-            annotated = draw_openpose(annotated, pts)
         
         for pt in pts.values():
             cv2.circle(annotated, pt, 4, (255, 255, 255), -1)
@@ -122,43 +92,35 @@ def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
 # =========================================================
 st.sidebar.markdown("## ⚙️ CONFIGURATION")
 model_choice = st.sidebar.selectbox("Analysis Engine", ["MediaPipe (33 pts)", "MoveNet (17 pts)", "OpenPose (18 pts)"])
-mode = st.sidebar.radio("Data Input", ["Real-time Webcam", "Image Analysis", "Video Analysis"])
+mode = st.sidebar.radio("Data Input", ["Mobile/Webcam Capture", "Image Analysis", "Video Analysis"])
 
-comp_level = 0 if mode == "Real-time Webcam" else 2
-engine = get_pose_engine(comp_level, mode == "Image Analysis")
+# Force complexity 0 for all modes to ensure cloud server permissions
+engine = get_pose_engine(0, mode == "Image Analysis")
 
 # =========================================================
-# 5. EXECUTION MODES
+# 5. EXECUTION MODES (Streamlit Cloud Compatible)
 # =========================================================
 
-if "Webcam" in mode:
-    m1, m2, m3 = st.columns(3)
-    q_met, l_met, f_met = m1.empty(), m2.empty(), m3.empty()
-    _, center_col, _ = st.columns([1, 4, 1])
-    video_panel = center_col.empty()
+if "Capture" in mode:
+    # st.camera_input is necessary for mobile deployment
+    img_file = st.camera_input("Position yourself for analysis")
     
-    if st.button("INITIALIZE LIVE STREAM"):
-        cap = cv2.VideoCapture(0)
-        prev_t = 0
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: break
-            curr_t = time.time()
-            fps = 1/(curr_t - prev_t) if prev_t > 0 else 0
-            prev_t = curr_t
-            # Single-feed for webcam speed
-            _, proc, score, lat = analyze_frame(frame, model_choice, engine, target_size=(640, 480))
-            q_met.metric("CONFIDENCE", f"{int(score)}%")
-            l_met.metric("LATENCY", f"{int(lat)}ms")
-            f_met.metric("FPS", f"{int(fps)}")
-            video_panel.image(proc, channels="BGR", use_container_width=True)
-        cap.release()
+    if img_file:
+        file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
+        frame = cv2.imdecode(file_bytes, 1)
+        
+        m1, m2 = st.columns(2)
+        orig_resized, proc, score, lat = analyze_frame(frame, model_choice, engine)
+        
+        m1.metric("CONFIDENCE SCORE", f"{int(score)}%")
+        m2.metric("CLOUD LATENCY", f"{int(lat)}ms")
+        
+        st.image(proc, channels="BGR", use_container_width=True, caption="Biometric Skeleton Result")
 
 elif "Image" in mode:
     file = st.file_uploader("Upload Image Asset", type=['jpg','png','jpeg'])
     if file:
         img_raw = cv2.imdecode(np.frombuffer(file.read(), np.uint8), 1)
-        # Fixed-size output for symmetry
         orig_resized, proc, score, lat = analyze_frame(img_raw, model_choice, engine)
         
         c1, c2 = st.columns(2)
@@ -169,14 +131,17 @@ elif "Image" in mode:
 elif "Video" in mode:
     file = st.file_uploader("Upload Video File", type=['mp4','mov','avi'])
     if file:
-        tfile = tempfile.NamedTemporaryFile(delete=False); tfile.write(file.read())
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(file.read())
         cap = cv2.VideoCapture(tfile.name)
+        
         c1, c2 = st.columns(2)
-        v_orig = c1.empty(); v_proc = c2.empty()
+        v_orig = c1.empty()
+        v_proc = c2.empty()
+        
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
-            # Force both frames to same dimensions per loop
             orig_resized, proc, score, lat = analyze_frame(frame, model_choice, engine)
             v_orig.image(orig_resized, channels="BGR", use_container_width=True)
             v_proc.image(proc, channels="BGR", use_container_width=True)
