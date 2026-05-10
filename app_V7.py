@@ -6,7 +6,7 @@ import tempfile
 import time
 
 # =========================================================
-# 1. UI DESIGN (CSS) - Professional Gym/Biometric Look
+# 1. UI DESIGN (CSS) - Professional Biometric Look
 # =========================================================
 st.set_page_config(page_title="PoseShow Pro", layout="wide")
 
