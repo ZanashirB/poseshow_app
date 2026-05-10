@@ -1,1 +1,5 @@
-# Core Analysis Engine (Requirement #1)mediapipe==0.10.14opencv-python==4.13.0.92# Cross-Platform Interface (Requirement #2)streamlit==1.57.0# Data Evaluation & Processing (Requirement #3)numpy==2.4.4pandas==3.0.2# System Utilitiesprotobuf==4.25.9 
+mediapipe>=0.10.30
+opencv-python-headless
+streamlit>=1.57.0
+numpy
+pandas
