@@ -4,9 +4,10 @@ import numpy as np
 import mediapipe as mp
 import tempfile
 import time
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # =========================================================
-# 1. UI DESIGN (CSS) - Professional Biometric Look
+# 1. UI DESIGN & SETTINGS
 # =========================================================
 st.set_page_config(page_title="PoseShow Pro", layout="wide")
 
@@ -19,12 +20,6 @@ st.markdown("""
         border-radius: 12px; font-weight: 800; border: none;
         width: 100%; height: 3em; transition: 0.3s;
     }
-    .stButton>button:hover { background-color: #BAE600; color: #000; }
-    .stMetric { 
-        background-color: #161B22; padding: 20px; 
-        border-radius: 15px; border: 1px solid #30363D; 
-    }
-    div[data-testid="stMetricValue"] { color: #DFFF00 !important; font-family: 'Courier New'; }
     h1, h2, h3 { color: #DFFF00 !important; font-weight: 800; }
     img { border-radius: 15px; border: 1px solid #30363D; }
     </style>
@@ -34,7 +29,7 @@ st.title("PoseShow Pro")
 st.write("Symmetrical Biometric Analysis Interface")
 
 # =========================================================
-# 2. DEFINITIONS & PRECISION LANDMARKS
+# 2. CORE ENGINE SETUP
 # =========================================================
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -45,104 +40,91 @@ JOINTS = {
     "r_hip": 24, "l_hip": 23, "r_kne": 26, "l_kne": 25, "r_ank": 28, "l_ank": 27
 }
 
-# =========================================================
-# 3. CORE PROCESSING ENGINE
-# =========================================================
-
 @st.cache_resource
-def get_pose_engine(comp, is_static):
-    # model_complexity=0 (Lite) is CRITICAL for cloud permissions and mobile speed
+def get_pose_engine():
+    # model_complexity=0 is the "Lite" version. 
+    # It's faster for phones and avoids permission errors on the cloud server.
     return mp_pose.Pose(
-        static_image_mode=is_static, 
+        static_image_mode=False, 
         model_complexity=0, 
-        smooth_landmarks=True, 
         min_detection_confidence=0.5, 
         min_tracking_confidence=0.5
     )
 
-def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
-    frame = cv2.resize(frame, target_size)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    start = time.time()
-    results = engine.process(rgb)
-    latency = (time.time() - start) * 1000
-    
-    annotated = frame.copy()
-    score = 0
-    if results.pose_landmarks:
-        h, w, _ = frame.shape
-        pts = {k: (int(landmarks.landmark[v].x * w), int(landmarks.landmark[v].y * h)) 
-               for k, v in JOINTS.items() for landmarks in [results.pose_landmarks] 
-               if landmarks.landmark[v].visibility > 0.5}
+# =========================================================
+# 3. REAL-TIME STREAMING CLASS
+# =========================================================
+class PoseProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.engine = get_pose_engine()
 
-        # MediaPipe Drawing
-        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                                     mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=1, circle_radius=2),
-                                     mp_drawing.DrawingSpec(color=(223, 255, 0), thickness=2))
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
         
-        for pt in pts.values():
-            cv2.circle(annotated, pt, 4, (255, 255, 255), -1)
-
-        score = np.mean([lm.visibility for lm in results.pose_landmarks.landmark]) * 100
+        # Symmetrical Analysis Resize
+        img = cv2.resize(img, (640, 480))
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = self.engine.process(rgb)
         
-    return frame, annotated, score, latency
+        if results.pose_landmarks:
+            # Draw the skeleton overlay
+            mp_drawing.draw_landmarks(
+                img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=1, circle_radius=2),
+                mp_drawing.DrawingSpec(color=(223, 255, 0), thickness=2)
+            )
+        
+        # Return the processed frame to the user's browser
+        return frame.from_ndarray(img, format="bgr24")
 
 # =========================================================
-# 4. NAVIGATION
+# 4. NAVIGATION & MODES
 # =========================================================
 st.sidebar.markdown("## ⚙️ CONFIGURATION")
-model_choice = st.sidebar.selectbox("Analysis Engine", ["MediaPipe (33 pts)", "MoveNet (17 pts)", "OpenPose (18 pts)"])
-mode = st.sidebar.radio("Data Input", ["Mobile/Webcam Capture", "Image Analysis", "Video Analysis"])
+mode = st.sidebar.radio("Data Input", ["Real-time Webcam", "Image Analysis", "Video Analysis"])
 
-# Force complexity 0 for all modes to ensure cloud server permissions
-engine = get_pose_engine(0, mode == "Image Analysis")
+# Simple configuration for browser security
+RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
-# =========================================================
-# 5. EXECUTION MODES (Streamlit Cloud Compatible)
-# =========================================================
-
-if "Capture" in mode:
-    # st.camera_input is necessary for mobile deployment
-    img_file = st.camera_input("Position yourself for analysis")
+if mode == "Real-time Webcam":
+    st.subheader("Live Biometric Stream")
+    st.info("Click 'Start' to begin real-time analysis. Your browser will ask for camera permission.")
     
-    if img_file:
-        file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
-        frame = cv2.imdecode(file_bytes, 1)
-        
-        m1, m2 = st.columns(2)
-        orig_resized, proc, score, lat = analyze_frame(frame, model_choice, engine)
-        
-        m1.metric("CONFIDENCE SCORE", f"{int(score)}%")
-        m2.metric("CLOUD LATENCY", f"{int(lat)}ms")
-        
-        st.image(proc, channels="BGR", use_container_width=True, caption="Biometric Skeleton Result")
+    webrtc_streamer(
+        key="pose-stream",
+        video_processor_factory=PoseProcessor,
+        rtc_configuration=RTC_CONFIG,
+        media_stream_constraints={"video": True, "audio": False},
+    )
 
-elif "Image" in mode:
-    file = st.file_uploader("Upload Image Asset", type=['jpg','png','jpeg'])
+elif mode == "Image Analysis":
+    file = st.file_uploader("Upload Image", type=['jpg','png','jpeg'])
     if file:
         img_raw = cv2.imdecode(np.frombuffer(file.read(), np.uint8), 1)
-        orig_resized, proc, score, lat = analyze_frame(img_raw, model_choice, engine)
+        engine = get_pose_engine()
+        rgb = cv2.cvtColor(img_raw, cv2.COLOR_BGR2RGB)
+        results = engine.process(rgb)
         
-        c1, c2 = st.columns(2)
-        c1.image(orig_resized, channels="BGR", use_container_width=True, caption="Raw Input Source")
-        c2.image(proc, channels="BGR", use_container_width=True, caption=f"Analyzed Pose ({model_choice})")
-        st.success(f"Final Analysis Result: {int(score)}% Confidence | {int(lat)}ms Processing Time")
+        if results.pose_landmarks:
+            mp_drawing.draw_landmarks(img_raw, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        
+        st.image(img_raw, channels="BGR", use_container_width=True)
 
-elif "Video" in mode:
-    file = st.file_uploader("Upload Video File", type=['mp4','mov','avi'])
+elif mode == "Video Analysis":
+    file = st.file_uploader("Upload Video", type=['mp4','mov','avi'])
     if file:
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(file.read())
         cap = cv2.VideoCapture(tfile.name)
-        
-        c1, c2 = st.columns(2)
-        v_orig = c1.empty()
-        v_proc = c2.empty()
+        v_proc = st.empty()
+        engine = get_pose_engine()
         
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
-            orig_resized, proc, score, lat = analyze_frame(frame, model_choice, engine)
-            v_orig.image(orig_resized, channels="BGR", use_container_width=True)
-            v_proc.image(proc, channels="BGR", use_container_width=True)
+            rgb = cv2.cvtColor(cv2.resize(frame, (640, 480)), cv2.COLOR_BGR2RGB)
+            res = engine.process(rgb)
+            if res.pose_landmarks:
+                mp_drawing.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            v_proc.image(frame, channels="BGR", use_container_width=True)
         cap.release()
