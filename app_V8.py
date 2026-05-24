@@ -47,14 +47,12 @@ JOINTS = {
 }
 
 # =========================================================
-# 3. CORE PROCESSING ENGINE (FIXED FOR CLOUD)
+# 3. CORE PROCESSING ENGINE
 # =========================================================
-
 @st.cache_resource
 def get_pose_engine(comp, is_static):
-    # Set model directory to a writable location
+    # Fix for Streamlit Cloud PermissionError
     os.environ['MEDIAPIPE_MODEL_PATH'] = '/tmp'
-    
     return mp_pose.Pose(
         static_image_mode=is_static, 
         model_complexity=comp, 
@@ -77,7 +75,8 @@ def draw_movenet(frame, pts):
 def draw_openpose(frame, pts):
     line_color = (0, 0, 255) 
     if "r_sho" in pts and "l_sho" in pts:
-        neck = (int((pts["r_sho"][0] + pts["l_sho"][0])/2), int((pts["r_sho"][1] + pts["l_shiv"][1])/2))
+        # TYPO FIXED: l_shiv changed to l_sho
+        neck = (int((pts["r_sho"][0] + pts["l_sho"][0])/2), int((pts["r_sho"][1] + pts["l_sho"][1])/2))
         pts["neck"] = neck
     skeleton = [("nose","neck"), ("neck","r_sho"), ("neck","l_sho"), ("neck","r_hip"), ("neck","l_hip"),
                 ("r_sho","r_elb"), ("r_elb","r_wri"), ("l_sho","l_elb"), ("l_elb","l_wri"),
@@ -129,7 +128,6 @@ comp_level = 0 if mode == "Real-time Webcam" else 2
 engine = get_pose_engine(comp_level, mode == "Image Analysis")
 
 if "Webcam" in mode:
-    st.warning("Webcam access requires browser-level permissions on Streamlit Cloud.")
     if st.button("INITIALIZE LIVE STREAM"):
         cap = cv2.VideoCapture(0)
         video_panel = st.empty()
