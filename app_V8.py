@@ -35,7 +35,7 @@ st.title("PoseShow Pro")
 st.write("Symmetrical Biometric Analysis Interface")
 
 # =========================================================
-# 2. DEFINITIONS & PRECISION LANDMARKS
+# 2. DEFINITIONS
 # =========================================================
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -47,11 +47,11 @@ JOINTS = {
 }
 
 # =========================================================
-# 3. CORE PROCESSING ENGINE
+# 3. CORE ENGINE
 # =========================================================
 @st.cache_resource
 def get_pose_engine(comp, is_static):
-    # Fix for Streamlit Cloud PermissionError
+    # Writable directory for cloud deployment
     os.environ['MEDIAPIPE_MODEL_PATH'] = '/tmp'
     return mp_pose.Pose(
         static_image_mode=is_static, 
@@ -63,37 +63,30 @@ def get_pose_engine(comp, is_static):
 
 def draw_movenet(frame, pts):
     line_color = (0, 255, 200) 
-    face_links = [("nose","r_eye"), ("nose","l_eye"), ("r_eye","r_ear"), ("l_eye","l_ear")]
-    body_links = [("r_sho","l_sho"), ("r_sho","r_hip"), ("l_sho","l_hip"), ("r_hip","l_hip"),
-                  ("r_sho","r_elb"), ("r_elb","r_wri"), ("l_sho","l_elb"), ("l_elb","l_wri"),
-                  ("r_hip","r_kne"), ("r_kne","r_ank"), ("l_hip","l_kne"), ("l_kne","l_ank")]
-    for p1, p2 in face_links + body_links:
-        if p1 in pts and p2 in pts:
-            cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
+    links = [("nose","r_eye"), ("nose","l_eye"), ("r_sho","l_sho"), ("r_sho","r_hip"), 
+             ("l_sho","l_hip"), ("r_hip","l_hip"), ("r_sho","r_elb"), ("r_elb","r_wri"), 
+             ("l_sho","l_elb"), ("l_elb","l_wri"), ("r_hip","r_kne"), ("r_kne","r_ank"), 
+             ("l_hip","l_kne"), ("l_kne","l_ank")]
+    for p1, p2 in links:
+        if p1 in pts and p2 in pts: cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
     return frame
 
 def draw_openpose(frame, pts):
     line_color = (0, 0, 255) 
     if "r_sho" in pts and "l_sho" in pts:
-        # TYPO FIXED: l_shiv changed to l_sho
         neck = (int((pts["r_sho"][0] + pts["l_sho"][0])/2), int((pts["r_sho"][1] + pts["l_sho"][1])/2))
         pts["neck"] = neck
-    skeleton = [("nose","neck"), ("neck","r_sho"), ("neck","l_sho"), ("neck","r_hip"), ("neck","l_hip"),
-                ("r_sho","r_elb"), ("r_elb","r_wri"), ("l_sho","l_elb"), ("l_elb","l_wri"),
-                ("r_hip","r_kne"), ("r_kne","r_ank"), ("l_hip","l_kne"), ("l_kne","l_ank"),
-                ("nose","r_eye"), ("r_eye","r_ear"), ("nose","l_eye"), ("l_eye","l_ear")]
+    skeleton = [("nose","neck"), ("neck","r_sho"), ("neck","l_sho"), ("r_sho","r_elb"), ("r_elb","r_wri"),
+                ("l_sho","l_elb"), ("l_elb","l_wri"), ("neck","r_hip"), ("neck","l_hip"),
+                ("r_hip","r_kne"), ("r_kne","r_ank"), ("l_hip","l_kne"), ("l_kne","l_ank")]
     for p1, p2 in skeleton:
-        if p1 in pts and p2 in pts:
-            cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
+        if p1 in pts and p2 in pts: cv2.line(frame, pts[p1], pts[p2], line_color, 2, cv2.LINE_AA)
     return frame
 
 def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
     frame = cv2.resize(frame, target_size)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = engine.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     start = time.time()
-    results = engine.process(rgb)
-    latency = (time.time() - start) * 1000
-    
     annotated = frame.copy()
     score = 0
     if results.pose_landmarks:
@@ -101,60 +94,38 @@ def analyze_frame(frame, model_name, engine, target_size=(640, 480)):
         pts = {k: (int(landmarks.landmark[v].x * w), int(landmarks.landmark[v].y * h)) 
                for k, v in JOINTS.items() for landmarks in [results.pose_landmarks] 
                if landmarks.landmark[v].visibility > 0.5}
-
         if "MediaPipe" in model_name:
-            mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                                     mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=1, circle_radius=2),
-                                     mp_drawing.DrawingSpec(color=(223, 255, 0), thickness=2))
-        elif "MoveNet" in model_name:
-            annotated = draw_movenet(annotated, pts)
-        else:
-            annotated = draw_openpose(annotated, pts)
-        
-        for pt in pts.values():
-            cv2.circle(annotated, pt, 4, (255, 255, 255), -1)
+            mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        elif "MoveNet" in model_name: annotated = draw_movenet(annotated, pts)
+        else: annotated = draw_openpose(annotated, pts)
         score = np.mean([lm.visibility for lm in results.pose_landmarks.landmark]) * 100
-        
-    return frame, annotated, score, latency
+    return annotated, score, (time.time() - start) * 1000
 
 # =========================================================
-# 4. NAVIGATION & EXECUTION
+# 4. EXECUTION
 # =========================================================
-st.sidebar.markdown("## ⚙️ CONFIGURATION")
-model_choice = st.sidebar.selectbox("Analysis Engine", ["MediaPipe (33 pts)", "MoveNet (17 pts)", "OpenPose (18 pts)"])
-mode = st.sidebar.radio("Data Input", ["Real-time Webcam", "Image Analysis", "Video Analysis"])
-
-comp_level = 0 if mode == "Real-time Webcam" else 2
-engine = get_pose_engine(comp_level, mode == "Image Analysis")
+model_choice = st.sidebar.selectbox("Engine", ["MediaPipe", "MoveNet", "OpenPose"])
+mode = st.sidebar.radio("Input", ["Real-time Webcam", "Image", "Video"])
+engine = get_pose_engine(0 if mode == "Real-time Webcam" else 2, mode == "Image")
 
 if "Webcam" in mode:
-    if st.button("INITIALIZE LIVE STREAM"):
+    m1, m2, m3 = st.columns(3); q_met, l_met, f_met = m1.empty(), m2.empty(), m3.empty()
+    video_panel = st.empty(); prev_t = 0
+    if st.button("START"):
         cap = cv2.VideoCapture(0)
-        video_panel = st.empty()
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
-            _, proc, _, _ = analyze_frame(frame, model_choice, engine)
+            curr_t = time.time()
+            proc, score, lat = analyze_frame(frame, model_choice, engine)
+            q_met.metric("CONFIDENCE", f"{int(score)}%"); l_met.metric("LATENCY", f"{int(lat)}ms")
+            f_met.metric("FPS", f"{int(1/(curr_t - prev_t) if prev_t > 0 else 0)}")
             video_panel.image(proc, channels="BGR", use_container_width=True)
+            prev_t = curr_t
         cap.release()
-
 elif "Image" in mode:
-    file = st.file_uploader("Upload Image", type=['jpg','png','jpeg'])
+    file = st.file_uploader("Upload", type=['jpg','png'])
     if file:
-        img_raw = cv2.imdecode(np.frombuffer(file.read(), np.uint8), 1)
-        _, proc, score, lat = analyze_frame(img_raw, model_choice, engine)
+        proc, score, lat = analyze_frame(cv2.imdecode(np.frombuffer(file.read(), np.uint8), 1), model_choice, engine)
         st.image(proc, channels="BGR", use_container_width=True)
         st.success(f"Confidence: {int(score)}% | Latency: {int(lat)}ms")
-
-elif "Video" in mode:
-    file = st.file_uploader("Upload Video", type=['mp4','mov'])
-    if file:
-        tfile = tempfile.NamedTemporaryFile(delete=False); tfile.write(file.read())
-        cap = cv2.VideoCapture(tfile.name)
-        v_proc = st.empty()
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: break
-            _, proc, _, _ = analyze_frame(frame, model_choice, engine)
-            v_proc.image(proc, channels="BGR", use_container_width=True)
-        cap.release()
