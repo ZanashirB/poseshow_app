@@ -2,78 +2,61 @@ import streamlit as st
 import cv2
 import numpy as np
 import mediapipe as mp
-import tempfile
-import time
 
+# Page Config
 st.set_page_config(page_title="PoseShow Pro", layout="wide")
+st.title("PoseShow Pro - Integrated Prototype")
 
-# CSS remains the same...
-st.markdown("""<style>.stApp { background-color: #0E1117; color: #FFFFFF; }</style>""", unsafe_allow_html=True)
-
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-
-# Global dictionary to store the previous frame's landmarks for smoothing
-last_pts = {}
-
+# Initialize Engine (cached to prevent reload loops)
 @st.cache_resource
-def get_pose_engine(comp):
-    # Increased confidence thresholds to 0.7 to stop "hallucinating" low-confidence points
-    return mp_pose.Pose(
+def get_pose_engine():
+    return mp.solutions.pose.Pose(
         static_image_mode=False, 
-        model_complexity=comp, 
-        smooth_landmarks=True, 
-        min_detection_confidence=0.7, 
+        model_complexity=1, 
+        min_detection_confidence=0.7,
         min_tracking_confidence=0.7
     )
 
-def analyze_frame(frame, model_name, engine):
-    global last_pts
+engine = get_pose_engine()
+
+# Processing Function
+def analyze_frame(frame, engine):
+    # Resize to reduce processing load
     frame = cv2.resize(frame, (640, 480))
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = engine.process(rgb)
     
-    annotated = frame.copy()
-    
     if results.pose_landmarks:
-        h, w, _ = frame.shape
-        # Extract points only if visibility is high
-        curr_pts = {i: (int(lm.x * w), int(lm.y * h)) 
-                    for i, lm in enumerate(results.pose_landmarks.landmark) 
-                    if lm.visibility > 0.6}
+        mp.solutions.drawing_utils.draw_landmarks(
+            frame, 
+            results.pose_landmarks, 
+            mp.solutions.pose.POSE_CONNECTIONS
+        )
+    return frame
 
-        # Temporal Smoothing: 70% current, 30% previous
-        alpha = 0.7
-        for i, pos in curr_pts.items():
-            if i in last_pts:
-                curr_pts[i] = (int(alpha * pos[0] + (1 - alpha) * last_pts[i][0]),
-                               int(alpha * pos[1] + (1 - alpha) * last_pts[i][1]))
-            last_pts[i] = curr_pts[i]
+# UI Navigation
+mode = st.sidebar.radio("Input Mode", ["Real-time Webcam", "Image Analysis"])
 
-        # Draw skeletons based on topology
-        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+# --- REAL-TIME WEBCAM ---
+if mode == "Real-time Webcam":
+    if st.button("Start Camera"):
+        cam = cv2.VideoCapture(0)
+        frame_placeholder = st.empty()
+        stop_btn = st.button("Stop Camera")
         
-    return annotated
+        while cam.isOpened() and not stop_btn:
+            ret, frame = cam.read()
+            if not ret: break
+            frame = analyze_frame(frame, engine)
+            frame_placeholder.image(frame, channels="BGR", use_container_width=True)
+            
+        cam.release()
 
-# App Layout
-model_choice = st.sidebar.selectbox("Engine", ["MediaPipe", "MoveNet", "OpenPose"])
-mode = st.sidebar.radio("Input", ["Video Analysis"])
-
-engine = get_pose_engine(1) 
-
-file = st.file_uploader("Upload Video", type=['mp4'])
-if file:
-    tfile = tempfile.NamedTemporaryFile(delete=False); tfile.write(file.read())
-    cap = cv2.VideoCapture(tfile.name)
-    st_frame = st.empty()
-    
-    # Optional: Confidence Chart for Thesis Data
-    chart_data = []
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
-        
-        proc = analyze_frame(frame, model_choice, engine)
-        st_frame.image(proc, channels="BGR")
-    cap.release()
+# --- IMAGE ANALYSIS ---
+elif mode == "Image Analysis":
+    uploaded_file = st.file_uploader("Upload Image", type=['jpg', 'png', 'jpeg'])
+    if uploaded_file:
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, 1)
+        proc = analyze_frame(img, engine)
+        st.image(proc, channels="BGR", use_container_width=True)
